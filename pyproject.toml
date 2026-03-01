@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agora-code"
+version = "0.1.0"
+description = "Scan any codebase. Turn it into an agent."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Agora" }]
+keywords = ["ai", "agent", "api", "mcp", "openapi", "codebase"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+
+# Core: click for CLI, stdlib for tiers 1, 2, 4
+dependencies = ["click>=8.0"]
+
+[project.optional-dependencies]
+# Tier 3 extractors
+openai  = ["openai>=1.0"]
+gemini  = ["google-generativeai>=0.8"]
+
+# Agent LLM backend
+llm     = ["openai>=1.0"]
+
+# Memory integration
+memory  = ["agora-mem>=0.1.0"]
+
+# --- Enterprise edition ---
+# Supabase cloud backend (future: multi-tenant, shared catalogs)
+enterprise = [
+    "supabase>=2.0",
+    "agora-mem[supabase]>=0.1.0",
+]
+# Auth placeholder — Supabase Auth or WorkOS, wired in later
+# enterprise-auth = ["workos>=4.0"]   # uncomment when ready
+
+# Dev / test
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",          # for mocking API calls in tests
+    "ruff>=0.4",
+]
+
+# Everything
+all = [
+    "agora-code[openai,gemini,llm,memory,enterprise,dev]",
+]
+
+[project.scripts]
+agora-code = "agora_code.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agora_code"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
