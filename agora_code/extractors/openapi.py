@@ -47,32 +47,33 @@ _LOCAL_FILES = [
 def _is_safe_url(url: str) -> bool:
     """
     Validate URL to prevent SSRF attacks.
-    Blocks localhost, private IPs, and cloud metadata endpoints.
+    Allows localhost for local development.
+    Blocks private IPs and cloud metadata endpoints for remote URLs.
     """
     try:
         parsed = urllib.parse.urlparse(url)
         hostname = parsed.hostname
-        
+
         if not hostname:
             return False
-        
-        # Block localhost
+
+        # Allow localhost explicitly — needed for local dev servers
         if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            return False
-        
+            return True
+
         # Try to resolve IP
         try:
             ip = ipaddress.ip_address(hostname)
-            # Block private networks
+            # Block private networks (but not loopback — covered above)
             if ip.is_private or ip.is_loopback or ip.is_link_local:
                 return False
         except ValueError:
-            # Hostname, not IP - check against known bad patterns
+            # Hostname, not IP — check against known bad patterns
             if hostname.startswith("169.254."):  # AWS metadata
                 return False
             if hostname.endswith(".internal"):  # Internal domains
                 return False
-        
+
         return True
     except Exception:
         return False
