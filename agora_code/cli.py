@@ -443,68 +443,6 @@ def status(db_path):
 
 
 # --------------------------------------------------------------------------- #
-#  inject                                                                      #
-# --------------------------------------------------------------------------- #
-
-@main.command()
-@click.option("--level", default="summary",
-              type=click.Choice(["index", "summary", "detail", "full"]),
-              help="Compression level")
-@click.option("--quiet", is_flag=True, default=False,
-              help="Plain output (no headers, for Claude hook injection)")
-@click.option("--db-path", default="./agora_agent_memory.db")
-def inject(level, quiet, db_path):
-    """Inject compressed route context (used by Claude hooks at session start).
-
-    \b
-    agora-code inject                  # prints summary-level context
-    agora-code inject --level index    # ultra-compact
-    agora-code inject --quiet          # plain text for hook injection
-    """
-    try:
-        from agora_mem import MemoryStore
-        from agora_code.memory_layer import AgentMemory
-    except ImportError:
-        if not quiet:
-            _echo("⚠️  agora-mem not installed — no cached context available.")
-        return
-
-    store = MemoryStore(storage="sqlite", db_path=db_path)
-    memory = AgentMemory(store)
-
-    async def _run():
-        session_ids = await store.list_sessions()
-        scan_sessions = [s for s in session_ids if s.startswith("scan:")]
-
-        if not scan_sessions:
-            if not quiet:
-                _echo("📭 No scans cached. Run: agora-code scan <target> first.")
-            return
-
-        parts = []
-        if not quiet:
-            parts.append("<agora-code-context>\n")
-
-        for sid in scan_sessions:
-            cache = await memory.load_scan_cache(sid.removeprefix("scan:"))
-            if cache:
-                tldr_key = f"tldr_{level}"
-                if level == "full":
-                    tldr = cache.get("routes_json", "")
-                else:
-                    tldr = cache.get(tldr_key, cache.get("tldr_summary", ""))
-                if tldr:
-                    parts.append(tldr)
-
-        if not quiet:
-            parts.append("\n</agora-code-context>")
-
-        click.echo("\n".join(parts))
-
-    asyncio.run(_run())
-
-
-# --------------------------------------------------------------------------- #
 #  state                                                                       #
 # --------------------------------------------------------------------------- #
 

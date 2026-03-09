@@ -51,10 +51,11 @@ _SESSION_FILE = "session.json"
 _GLOBAL_DIR = Path.home() / ".agora-code"
 
 
-def _find_project_root(start: Optional[Path] = None) -> Path:
+def _find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """
     Walk up from start until we find .agora-code/, .git/, or pyproject.toml.
-    Returns start if nothing found.
+    Returns None if nothing found (e.g. MCP server spawned from /). This
+    signals callers to use the global ~/.agora-code fallback.
     """
     current = (start or Path.cwd()).resolve()
     while True:
@@ -66,13 +67,21 @@ def _find_project_root(start: Optional[Path] = None) -> Path:
             return current
         parent = current.parent
         if parent == current:
-            return (start or Path.cwd()).resolve()
+            # Reached filesystem root — no project found
+            return None
         current = parent
 
 
 def get_session_path(project_root: Optional[Path] = None) -> Path:
-    """Return path to the session.json for this project."""
-    root = project_root or _find_project_root()
+    """Return path to the session.json for this project.
+    
+    Falls back to ~/.agora-code/session.json when no project root is found
+    (e.g. MCP server spawned from / without a project context).
+    """
+    root = project_root if project_root is not None else _find_project_root()
+    if root is None:
+        # No project found — use global home directory fallback
+        return get_global_session_path()
     return root / _AGORA_DIR / _SESSION_FILE
 
 
