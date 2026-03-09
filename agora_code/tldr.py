@@ -15,7 +15,7 @@ Token budget auto-selection:
   estimate_tokens(text) uses the 4 chars ≈ 1 token heuristic.
   auto_level(routes) picks the highest-detail level under 2000 tokens.
 
-Inspired by FlowGuardian's tldr.py (MIT) — adapted for API routes
+Context compression for API routes and session state.
 rather than session context.
 """
 

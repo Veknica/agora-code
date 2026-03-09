@@ -255,7 +255,7 @@ def _build_tool_description(route: "Route") -> str:
     """
     Build an enriched MCP tool description with USE THIS WHEN: guidance.
 
-    Inspired by FlowGuardian's mcp_server.py tool description pattern.
+    Inspired by the MCP tool description pattern for rich AI-readable metadata.
     Tells the agent WHEN to call this tool proactively, not just what it does.
     """
     base = route.description or f"{route.method} {route.path}"
