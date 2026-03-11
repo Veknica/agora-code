@@ -856,7 +856,7 @@ def _summarize_diff(diff: str, file_path: str) -> str:
 
     scale = f"+{len(added)}/-{len(removed)} lines"
     desc = "; ".join(parts) if parts else "modified"
-    return f"{file_path}: {desc} ({scale})
+    return f"{file_path}: {desc} ({scale})"
 
 
 # --------------------------------------------------------------------------- #
