@@ -539,13 +539,25 @@ def inject(level, token_budget, raw, quiet):
         agora-code inject --level detail
         agora-code inject --raw      # full session JSON
     """
-    from agora_code.session import load_session_if_recent, load_session
+    from agora_code.session import (
+        load_session_if_recent, load_session, update_session,
+        _build_recalled_context,
+    )
     from agora_code.tldr import compress_session, auto_compress_session, session_restored_banner
 
     session = load_session_if_recent(max_age_hours=48) or load_session()
     if not session:
-        # Silently exit — no session to inject (don't pollute agent context)
+        # No active session — try to pull context from DB for a clean start
+        recalled = _build_recalled_context()
+        if recalled and not quiet:
+            click.echo(recalled)
         return
+
+    # Auto-populate context field once per session from DB if empty
+    if not session.get("context"):
+        recalled = _build_recalled_context()
+        if recalled:
+            session = update_session({"context": recalled})
 
     if raw:
         import json as _json

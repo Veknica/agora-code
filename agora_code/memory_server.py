@@ -230,12 +230,24 @@ _TOOLS = [
 # --------------------------------------------------------------------------- #
 
 async def _handle_get_session_context(params: dict) -> str:
-    from agora_code.session import load_session
-    from agora_code.tldr import compress_session, session_restored_banner
+    from agora_code.session import (
+        load_session, update_session, _build_recalled_context,
+    )
+    from agora_code.tldr import session_restored_banner
 
     session = load_session()
     if not session:
+        # No active session — surface DB context so agent isn't flying blind
+        recalled = _build_recalled_context()
+        if recalled:
+            return f"No active session. Past context from memory:\n\n{recalled}"
         return "No active session. Start one with save_checkpoint(goal='...')."
+
+    # Auto-populate context field once per session from DB if empty
+    if not session.get("context"):
+        recalled = _build_recalled_context()
+        if recalled:
+            session = update_session({"context": recalled})
 
     level = params.get("level", "detail")  # default: detail for AI agents
     if level == "full":

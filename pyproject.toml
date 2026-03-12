@@ -28,6 +28,9 @@ gemini  = ["google-generativeai>=0.8"]
 # Agent LLM backend
 llm     = ["openai>=1.0"]
 
+# Local embeddings — fully offline, no API key needed
+local   = ["sentence-transformers>=2.2", "torch>=2.0"]
+
 # Memory integration
 memory  = ["agora-mem>=0.1.0"]
 
