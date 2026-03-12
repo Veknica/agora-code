@@ -105,11 +105,16 @@ class VectorStore:
             ("branch",     "TEXT"),
             ("commit_sha", "TEXT"),
             ("ticket",     "TEXT"),
+            ("project_id", "TEXT"),  # git remote URL or directory name
         ]:
             try:
                 conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")
             except Exception:
                 pass  # Column already exists
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sessions_project
+            ON sessions(project_id, last_active)
+        """)
 
         # ── File changes (git diff tracking) ────────────────────────────────
         conn.execute("""
@@ -146,14 +151,19 @@ class VectorStore:
         """)
         # Safe migrations for existing DBs — ADD COLUMN IF NOT EXISTS
         for col, defn in [
-            ("branch",    "TEXT"),
-            ("files",     "TEXT"),
-            ("namespace", "TEXT DEFAULT 'personal'"),
+            ("branch",     "TEXT"),
+            ("files",      "TEXT"),
+            ("namespace",  "TEXT DEFAULT 'personal'"),
+            ("project_id", "TEXT"),  # git remote URL or directory name
         ]:
             try:
                 conn.execute(f"ALTER TABLE learnings ADD COLUMN {col} {defn}")
             except Exception:
                 pass  # Column already exists
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_learnings_project
+            ON learnings(project_id, timestamp)
+        """)
         # FTS5 over learnings — always available
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
@@ -247,6 +257,7 @@ class VectorStore:
         self,
         session: Dict[str, Any],
         embedding: Optional[list[float]] = None,
+        project_id: Optional[str] = None,
     ) -> None:
         """Upsert a session. Pass embedding for semantic session recall."""
         conn = self._conn_()
@@ -255,8 +266,9 @@ class VectorStore:
         conn.execute("""
             INSERT INTO sessions
                 (session_id, started_at, last_active, status, goal,
-                 hypothesis, current_action, api_base_url, session_data, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 hypothesis, current_action, api_base_url, session_data, tags,
+                 project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 last_active    = excluded.last_active,
                 status         = excluded.status,
@@ -265,7 +277,8 @@ class VectorStore:
                 current_action = excluded.current_action,
                 api_base_url   = excluded.api_base_url,
                 session_data   = excluded.session_data,
-                tags           = excluded.tags
+                tags           = excluded.tags,
+                project_id     = COALESCE(excluded.project_id, sessions.project_id)
         """, (
             session["session_id"],
             session.get("started_at", now),
@@ -277,6 +290,7 @@ class VectorStore:
             session.get("api_base_url"),
             json.dumps(session),
             json.dumps(session.get("tags", [])),
+            project_id or session.get("project_id"),
         ))
 
         if embedding and self._vec_available:
@@ -299,17 +313,36 @@ class VectorStore:
             return json.loads(row["session_data"])
         return None
 
-    def load_most_recent_session(self, max_age_hours: float = 24.0) -> Optional[Dict]:
+    def load_most_recent_session(
+        self,
+        max_age_hours: float = 24.0,
+        project_id: Optional[str] = None,
+        status: Optional[str] = "in_progress",
+    ) -> Optional[Dict]:
         """
         Load the most recently active session, if it's younger than max_age_hours.
-        Returns None if no session or if it's stale.
+
+        Args:
+            max_age_hours: Return None if session is older than this.
+            project_id: Filter to sessions from this project (git remote URL).
+                        If None, returns the most recent session across all projects.
+            status: Filter by status ('in_progress', 'complete', etc.).
+                    Pass None to match any status (useful for context recall).
+        Returns None if no matching session or if it's stale.
         """
-        row = self._conn_().execute("""
-            SELECT session_data, last_active FROM sessions
-            WHERE status = 'in_progress'
-            ORDER BY last_active DESC
-            LIMIT 1
-        """).fetchone()
+        query = "SELECT session_data, last_active FROM sessions WHERE 1=1"
+        params: list = []
+
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+
+        if project_id:
+            query += " AND project_id = ?"
+            params.append(project_id)
+
+        query += " ORDER BY last_active DESC LIMIT 1"
+        row = self._conn_().execute(query, params).fetchone()
 
         if not row or not row["session_data"]:
             return None
@@ -325,15 +358,25 @@ class VectorStore:
 
         return json.loads(row["session_data"])
 
-    def list_sessions(self, limit: int = 20) -> List[Dict]:
+    def list_sessions(self, limit: int = 20, project_id: Optional[str] = None) -> List[Dict]:
         """List recent sessions (lightweight — no full session_data)."""
-        rows = self._conn_().execute("""
-            SELECT session_id, started_at, last_active, status, goal, tags,
-                   branch, commit_sha, ticket
-            FROM sessions
-            ORDER BY last_active DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        if project_id:
+            rows = self._conn_().execute("""
+                SELECT session_id, started_at, last_active, status, goal, tags,
+                       branch, commit_sha, ticket, project_id
+                FROM sessions
+                WHERE project_id = ?
+                ORDER BY last_active DESC
+                LIMIT ?
+            """, (project_id, limit)).fetchall()
+        else:
+            rows = self._conn_().execute("""
+                SELECT session_id, started_at, last_active, status, goal, tags,
+                       branch, commit_sha, ticket, project_id
+                FROM sessions
+                ORDER BY last_active DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     # ----------------------------------------------------------------------- #
@@ -397,6 +440,7 @@ class VectorStore:
         branch: Optional[str] = None,
         files: Optional[list[str]] = None,
         namespace: str = "personal",
+        project_id: Optional[str] = None,
     ) -> str:
         """Store a learning and (optionally) its embedding. Returns learning ID."""
         conn = self._conn_()
@@ -409,12 +453,12 @@ class VectorStore:
             INSERT INTO learnings
                 (id, session_id, timestamp, api_base_url, endpoint_method,
                  endpoint_path, finding, evidence, confidence, tags,
-                 branch, files, namespace)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 branch, files, namespace, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             lid, session_id, now, api_base_url, endpoint_method,
             endpoint_path, finding, evidence, confidence, tags_json,
-            branch, files_json, namespace,
+            branch, files_json, namespace, project_id,
         ))
 
         if embedding and self._vec_available:
@@ -433,6 +477,7 @@ class VectorStore:
         query_embedding: list[float],
         k: int = 5,
         namespace: str = "personal",
+        project_id: Optional[str] = None,
     ) -> List[Dict]:
         """Cosine similarity search over learnings. Returns [] if sqlite-vec unavailable."""
         if not self._vec_available or not self._vec_dim:
@@ -441,6 +486,11 @@ class VectorStore:
         dim = len(query_embedding)
         if self._vec_dim != dim:
             return []
+
+        project_filter = "AND (l.project_id = ? OR l.project_id IS NULL)" if project_id else ""
+        params = [self._pack(query_embedding), k * 2, namespace]
+        if project_id:
+            params.append(project_id)
 
         try:
             rows = self._conn_().execute(f"""
@@ -452,8 +502,9 @@ class VectorStore:
                 JOIN learnings l ON l.id = v.learning_id
                 WHERE v.embedding MATCH ? AND k = ?
                   AND (l.namespace = ? OR l.namespace IS NULL)
+                  {project_filter}
                 ORDER BY v.distance
-            """, (self._pack(query_embedding), k * 2, namespace)).fetchall()
+            """, params).fetchall()
 
             return [_learning_row(r) for r in rows[:k]]
         except Exception:
@@ -464,23 +515,42 @@ class VectorStore:
         query: str,
         k: int = 5,
         namespace: str = "personal",
+        project_id: Optional[str] = None,
     ) -> List[Dict]:
         """FTS5/BM25 keyword search over learnings. Always works."""
+        project_filter = "AND (l.project_id = ? OR l.project_id IS NULL)" if project_id else ""
+        base_filter = "(AND (project_id = ? OR project_id IS NULL))" if project_id else ""
+
         if not query.strip():
-            # No query — return recent
-            rows = self._conn_().execute("""
-                SELECT id, finding, evidence, confidence, tags,
-                       endpoint_method, endpoint_path, timestamp,
-                       branch, files, namespace
-                FROM learnings
-                WHERE (namespace = ? OR namespace IS NULL)
-                ORDER BY timestamp DESC LIMIT ?
-            """, (namespace, k)).fetchall()
+            # No query — return recent learnings for this project
+            if project_id:
+                rows = self._conn_().execute("""
+                    SELECT id, finding, evidence, confidence, tags,
+                           endpoint_method, endpoint_path, timestamp,
+                           branch, files, namespace
+                    FROM learnings
+                    WHERE (namespace = ? OR namespace IS NULL)
+                      AND (project_id = ? OR project_id IS NULL)
+                    ORDER BY timestamp DESC LIMIT ?
+                """, (namespace, project_id, k)).fetchall()
+            else:
+                rows = self._conn_().execute("""
+                    SELECT id, finding, evidence, confidence, tags,
+                           endpoint_method, endpoint_path, timestamp,
+                           branch, files, namespace
+                    FROM learnings
+                    WHERE (namespace = ? OR namespace IS NULL)
+                    ORDER BY timestamp DESC LIMIT ?
+                """, (namespace, k)).fetchall()
             return [_learning_row(r) for r in rows]
 
         clean = query.replace('"', '""')
         try:
-            rows = self._conn_().execute("""
+            fts_params = [f'"{clean}"', namespace]
+            if project_id:
+                fts_params.append(project_id)
+            fts_params.append(k)
+            rows = self._conn_().execute(f"""
                 SELECT l.id, l.finding, l.evidence, l.confidence, l.tags,
                        l.endpoint_method, l.endpoint_path, l.timestamp,
                        l.branch, l.files, l.namespace,
@@ -489,21 +559,37 @@ class VectorStore:
                 JOIN learnings l ON l.id = f.id
                 WHERE learnings_fts MATCH ?
                   AND (l.namespace = ? OR l.namespace IS NULL)
+                  {project_filter}
                 ORDER BY score
                 LIMIT ?
-            """, (f'"{clean}"', namespace, k)).fetchall()
+            """, fts_params).fetchall()
             return [_learning_row(r) for r in rows]
         except Exception:
             # FTS5 match failed — fall back to LIKE
-            rows = self._conn_().execute("""
-                SELECT id, finding, evidence, confidence, tags,
-                       endpoint_method, endpoint_path, timestamp,
-                       branch, files, namespace
-                FROM learnings
-                WHERE (finding LIKE ? OR evidence LIKE ?)
-                  AND (namespace = ? OR namespace IS NULL)
-                ORDER BY timestamp DESC LIMIT ?
-            """, (f"%{query}%", f"%{query}%", namespace, k)).fetchall()
+            like_params = [f"%{query}%", f"%{query}%", namespace]
+            if project_id:
+                like_params.extend([project_id, k])
+                rows = self._conn_().execute("""
+                    SELECT id, finding, evidence, confidence, tags,
+                           endpoint_method, endpoint_path, timestamp,
+                           branch, files, namespace
+                    FROM learnings
+                    WHERE (finding LIKE ? OR evidence LIKE ?)
+                      AND (namespace = ? OR namespace IS NULL)
+                      AND (project_id = ? OR project_id IS NULL)
+                    ORDER BY timestamp DESC LIMIT ?
+                """, like_params).fetchall()
+            else:
+                like_params.append(k)
+                rows = self._conn_().execute("""
+                    SELECT id, finding, evidence, confidence, tags,
+                           endpoint_method, endpoint_path, timestamp,
+                           branch, files, namespace
+                    FROM learnings
+                    WHERE (finding LIKE ? OR evidence LIKE ?)
+                      AND (namespace = ? OR namespace IS NULL)
+                    ORDER BY timestamp DESC LIMIT ?
+                """, like_params).fetchall()
             return [_learning_row(r) for r in rows]
 
     # ----------------------------------------------------------------------- #

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -194,6 +195,37 @@ def _get_git_author() -> Optional[str]:
         return None
 
 
+def _get_project_id() -> str:
+    """
+    Return a stable identifier for the current project.
+
+    Priority:
+      1. Git remote origin URL (normalized — no credentials, no .git suffix)
+      2. Current directory name as fallback
+
+    Used to scope DB queries to the current project so sessions/learnings
+    from unrelated projects don't bleed into context injection.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            # Strip credentials (https://user:pass@host → https://host)
+            url = re.sub(r'https?://[^@]+@', 'https://', url)
+            # Normalize trailing slash and .git suffix
+            url = url.rstrip("/")
+            if url.endswith(".git"):
+                url = url[:-4]
+            if url:
+                return url
+    except Exception:
+        pass
+    return Path.cwd().name
+
+
 def _extract_ticket(branch: Optional[str]) -> Optional[str]:
     """
     Extract a ticket/issue number from a branch name.
@@ -204,7 +236,6 @@ def _extract_ticket(branch: Optional[str]) -> Optional[str]:
       GH-78-perf              → 'GH-78'
     Returns None if no ticket pattern found.
     """
-    import re
     if not branch:
         return None
     # Match: optional prefix/, then LETTERS-digits pattern
@@ -390,7 +421,7 @@ def update_session(
     # Dual-write to SQLite so sessions are always browsable
     try:
         from agora_code.vector_store import get_store
-        get_store().save_session(merged)
+        get_store().save_session(merged, project_id=_get_project_id())
     except Exception:
         pass  # Non-fatal: JSON file is always the source of truth
 
@@ -423,7 +454,7 @@ def archive_session(
         embedding = get_embedding(text)
 
         store = get_store()
-        store.save_session(session, embedding=embedding)
+        store.save_session(session, embedding=embedding, project_id=_get_project_id())
     except Exception:
         pass  # Non-fatal: session is still saved to JSON
 
@@ -540,3 +571,52 @@ def _ensure_gitignore(agora_dir: Path) -> None:
             gi.write_text("# agora-code local state — do not commit\n*\n", encoding="utf-8")
         except Exception:
             pass
+
+
+def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
+    """
+    Query the DB for past session + learnings to auto-populate a session's
+    context field at session start.
+
+    Called once per new session when context is empty. The result is written
+    back into session.json so subsequent inject calls just read the file —
+    zero DB queries after the first call.
+
+    Returns a formatted string or None if nothing useful found.
+    """
+    try:
+        from agora_code.vector_store import get_store
+        store = get_store()
+        pid = project_id or _get_project_id()
+        parts: List[str] = []
+
+        # Most recent session for this project (any status — including completed)
+        past = store.load_most_recent_session(
+            max_age_hours=168.0,  # 7 days
+            project_id=pid,
+            status=None,
+        )
+        if past and past.get("goal"):
+            goal = past.get("goal", "")
+            summary = past.get("summary") or past.get("current_action") or ""
+            next_steps = past.get("next_steps", [])
+            parts.append(f"Last session goal: {goal}")
+            if summary:
+                parts.append(f"Status: {summary}")
+            if next_steps:
+                steps = next_steps[:2]
+                parts.append("Pending: " + "; ".join(steps))
+
+        # Top learnings for this project
+        learnings = store.search_learnings_keyword("", k=3, project_id=pid)
+        if learnings:
+            parts.append("Stored learnings:")
+            for lr in learnings:
+                conf = {"confirmed": "✓", "likely": "~", "hypothesis": "?"}.get(
+                    lr.get("confidence", "confirmed"), ""
+                )
+                parts.append(f"  {conf} {lr['finding']}")
+
+        return "\n".join(parts) if parts else None
+    except Exception:
+        return None
