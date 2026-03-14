@@ -11,6 +11,17 @@
                 ]
             }
         ],
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/on-prompt.sh"
+                    }
+                ]
+            }
+        ],
         "PreToolUse": [
             {
                 "matcher": "Read",
@@ -18,17 +29,6 @@
                     {
                         "type": "command",
                         "command": ".claude/hooks/pre-read.sh"
-                    }
-                ]
-            }
-        ],
-        "PreCompact": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "agora-code checkpoint --quiet"
                     }
                 ]
             }
@@ -44,6 +44,39 @@
                     {
                         "type": "command",
                         "command": "agora-code track-diff $CLAUDE_TOOL_INPUT_FILE_PATH"
+                    }
+                ]
+            }
+        ],
+        "PostToolUseFailure": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/on-tool-failure.sh"
+                    }
+                ]
+            }
+        ],
+        "SubagentStart": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/on-subagent.sh"
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "agora-code checkpoint --quiet"
                     }
                 ]
             }
