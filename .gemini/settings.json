@@ -12,6 +12,18 @@
                 ]
             }
         ],
+        "BeforeAgent": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".gemini/hooks/before-agent.sh",
+                        "name": "agora-turn-context",
+                        "description": "Inject fresh session context every turn"
+                    }
+                ]
+            }
+        ],
         "BeforeTool": [
             {
                 "matcher": "read_file",

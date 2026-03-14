@@ -22,6 +22,11 @@
                 "command": ".cursor/hooks/after-file-edit.sh"
             }
         ],
+        "afterShellExecution": [
+            {
+                "command": ".cursor/hooks/after-shell.sh"
+            }
+        ],
         "preCompact": [
             {
                 "command": ".cursor/hooks/pre-compact.sh"
