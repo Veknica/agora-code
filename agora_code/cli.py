@@ -668,7 +668,7 @@ def learn(finding, endpoint, api, evidence, confidence, tags):
 # --------------------------------------------------------------------------- #
 
 @main.command()
-@click.argument("query")
+@click.argument("query", required=False, default=None)
 @click.option("--limit", "-n", default=5, help="Max results")
 def recall(query, limit):
     """Search your learnings knowledge base semantically.
@@ -676,30 +676,40 @@ def recall(query, limit):
     \b
     agora-code recall "email validation"
     agora-code recall "rate limit" --limit 10
+    agora-code recall                        # show most recent learnings
     """
     from agora_code.vector_store import get_store
     from agora_code.embeddings import get_query_embedding
 
     vs = get_store()
-    embed = get_query_embedding(query)
 
-    if embed:
-        results = vs.search_learnings_semantic(embed, k=limit)
-        mode = "semantic"
+    if not query:
+        # No query — show most recent learnings
+        results = vs.search_learnings_keyword("", k=limit)
+        mode = "recent"
     else:
-        results = []
-        mode = None
+        embed = get_query_embedding(query)
+        if embed:
+            results = vs.search_learnings_semantic(embed, k=limit)
+            mode = "semantic"
+        else:
+            results = []
+            mode = None
+
+        if not results:
+            results = vs.search_learnings_keyword(query, k=limit)
+            mode = "keyword"
 
     if not results:
-        results = vs.search_learnings_keyword(query, k=limit)
-        mode = "keyword"
-
-    if not results:
-        _echo(f"📭 No learnings match '{query}'.")
+        if query:
+            _echo(f"📭 No learnings match '{query}'.")
+        else:
+            _echo("📭 No learnings stored yet.")
         _echo("   Store one with: agora-code learn \"your finding\"")
         return
 
-    _echo(f"\n🔍 {len(results)} result(s) [{mode} search]:\n")
+    label = "most recent" if mode == "recent" else f"{mode} search"
+    _echo(f"\n🔍 {len(results)} result(s) [{label}]:\n")
     for i, r in enumerate(results, 1):
         ep = ""
         if r.get("endpoint_method") and r.get("endpoint_path"):
