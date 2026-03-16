@@ -603,7 +603,7 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
         # filter to actual checkpoint learnings by tag
         raw_checkpoints = store._conn_().execute("""
             SELECT finding, evidence FROM learnings
-            WHERE (project_id = ? OR project_id IS NULL)
+            WHERE project_id = ?
               AND tags LIKE '%checkpoint%'
             ORDER BY timestamp DESC LIMIT 1
         """, (pid,)).fetchone()
@@ -644,7 +644,7 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
         learnings_k = int(os.environ.get("AGORA_INJECT_LEARNINGS_K", "4"))
         learnings = store._conn_().execute("""
             SELECT finding, type, confidence FROM learnings
-            WHERE (project_id = ? OR project_id IS NULL)
+            WHERE project_id = ?
               AND (tags NOT LIKE '%checkpoint%' OR tags IS NULL)
               AND (tags NOT LIKE '%conversation-summary%')
               AND (tags NOT LIKE '%tool-failure%')
