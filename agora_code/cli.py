@@ -1472,48 +1472,6 @@ exit 0
         p.write_text(content, encoding="utf-8")
         p.chmod(p.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    # --- CLAUDE.md: instructions for Claude on how to use agora-code ---
-    claude_md_path = Path("CLAUDE.md")
-    claude_md_content = """# agora-code — Claude Code Instructions
-
-Everything is automatic via hooks. When you read a file, symbols are indexed.
-When a session ends, the transcript is parsed into a structured checkpoint.
-On every prompt, relevant learnings are recalled.
-
-**You do not need to manually run `agora-code learn` or `agora-code recall`** — the hooks handle it.
-
-## Always do this
-
-- **Before reading any file over ~200 lines**, run `agora-code summarize <file>` first
-- **At session start**, run `agora-code inject` to load previous session context
-
-## Tool reference
-
-| Command | When to use |
-|---|---|
-| `agora-code inject` | Session start — loads structured checkpoint, learnings, git state, symbol index |
-| `agora-code summarize <file>` | Before reading large files — 90%+ token reduction |
-| `agora-code learn "<text>"` | Force-save a specific finding right now (optional — auto-done by on-stop.sh) |
-| `agora-code recall "<query>"` | Search past findings (optional — auto-done by on-prompt.sh) |
-| `agora-code checkpoint --goal "..."` | Save progress mid-task |
-| `agora-code status` | Check current session and DB stats |
-| `agora-code complete --summary "..."` | Archive session to long-term memory when done |
-
-## Session lifecycle
-
-```
-Start     → agora-code inject
-Working   → agora-code summarize <file> before reading large files
-Step done → agora-code checkpoint --goal "..." --action "..."
-All done  → agora-code complete --summary "..."
-```
-"""
-    if not claude_md_path.exists():
-        claude_md_path.write_text(claude_md_content, encoding="utf-8")
-        _echo(f"✅ Created {claude_md_path}")
-    else:
-        _echo(f"ℹ️  {claude_md_path} already exists — not overwritten")
-
     _echo("✅ Claude Code hooks installed:")
     _echo(f"   {hooks_json_path}")
     for name in scripts:
