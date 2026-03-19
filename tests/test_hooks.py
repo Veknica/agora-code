@@ -26,7 +26,8 @@ REPO_ROOT = Path(__file__).parent.parent
 
 class TestClaudeHooks:
     def setup_method(self):
-        self.path = REPO_ROOT / ".claude" / "hooks.json"
+        # Claude Code uses .claude/settings.json (install-hooks --claude-code creates this)
+        self.path = REPO_ROOT / ".claude" / "settings.json"
         self.config = json.loads(self.path.read_text(encoding="utf-8"))
 
     def test_is_valid_json(self):
