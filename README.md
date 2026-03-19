@@ -17,7 +17,7 @@ Works with **Claude Code**, **Cursor**, **Gemini CLI** (hooks untested), **Copil
 - [Installation](#installation)
 - [First-time setup: how to run it](#first-time-setup-how-to-run-it)
 - [Cursor setup (quick start)](#cursor-setup-quick-start)
-- [Claude Code Plugin — One-Command Setup](#claude-code-plugin--one-command-setup)
+- [Claude Code Setup](#claude-code-setup)
 - [Manual Hook Setup by Agent](#manual-hook-setup-by-agent)
 - [Session Lifecycle](#session-lifecycle)
 - [MCP Tools Reference](#mcp-tools-reference)
@@ -150,7 +150,7 @@ pip install git+https://github.com/thebnbrkr/agora-code
 
 - Restart Cursor. The MCP server runs when Cursor starts; you don’t run `agora-code memory-server` in a terminal yourself.
 
-**2c. Claude Code** — use the plugin (see below) or run `agora-code install-hooks --claude-code` in the project, then run `./setup.sh` and restart Claude Code.
+**2c. Claude Code** — run `agora-code install-hooks --claude-code` in your project directory, then restart Claude Code. See [Claude Code Setup](#claude-code-setup) for details.
 
 **3. Confirm it’s working:** Run `agora-code status` (you should see the DB path and counts). Run `agora-code memory` to see sessions, learnings, snapshots, symbols (no SQL).
 
@@ -218,25 +218,42 @@ You should see the DB path and row counts. The AI in Cursor can then use inject,
 
 ---
 
-## Claude Code Plugin — One-Command Setup
+## Claude Code Setup
 
-The easiest way to use agora-code with Claude Code. Install once and it works in every project — no `CLAUDE.md` edits, no manual hook setup.
+### Per-project (recommended)
+
+Run this once inside your project directory:
 
 ```bash
 # 1. Install the CLI
 pip install git+https://github.com/thebnbrkr/agora-code
 
-# 2. Register the marketplace and install the plugin (user scope = all projects)
-claude plugin marketplace add thebnbrkr/agora-code
-claude plugin install agora-code@thebnbrkr/agora-code --scope user
+# 2. Set up hooks and the skill for this project
+cd your-project
+agora-code install-hooks --claude-code
 ```
 
-After this, every Claude Code session automatically:
+That's it. This writes into your project's `.claude/` directory:
+- `.claude/settings.json` — registers all hooks with Claude Code
+- `.claude/hooks/*.sh` — the hook scripts
+- `.claude/skills/agora-code/SKILL.md` — so Claude knows the agora-code commands
+
+Restart Claude Code. From now on, every session in this project automatically:
 - Runs `agora-code inject` at startup to load your last session state
 - Searches past learnings on every prompt and injects relevant ones as context
 - Indexes symbols and diffs on every file read/edit
-- Checkpoints before context compaction so nothing is lost
 - Digests the conversation on stop to extract goals and findings
+
+**Verify:** `agora-code status` — you should see the DB path and session counts.
+
+### Global (all projects at once)
+
+If you want agora-code active in every project without running the command per-project, install it as a Claude Code plugin at user scope:
+
+```bash
+claude plugin marketplace add thebnbrkr/agora-code
+claude plugin install agora-code@thebnbrkr/agora-code --scope user
+```
 
 The plugin ships all hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `PreCompact`, `PostCompact`, and `Stop`.
 
@@ -246,15 +263,7 @@ The plugin ships all hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `P
 
 ### Claude Code
 
-**One-command setup:**
-
-```bash
-agora-code install-hooks --claude-code
-```
-
-This generates **only** `.claude/settings.json` and the shell scripts under `.claude/hooks/`. It does **not** generate `SKILL.md` or `CLAUDE.md`. To get the skill so Claude knows when to run inject/summarize/recall/learn: run `./setup.sh` (copies `skills/agora-code/SKILL.md` to `~/.claude/skills/agora-code/SKILL.md`), or copy that file manually. The **Cursor** `.mdc` file (`.cursor/rules/agora.mdc`) is **not** auto-generated; it lives in this repo — copy `.cursor/rules/agora.mdc` into your project if you use Cursor. Restart Claude Code (or Cursor) after any hook/skill change.
-
-**Install verification:** (1) Run `agora-code install-hooks --claude-code`; (2) Run `./setup.sh` so the skill is available; (3) Restart Claude Code; (4) Run `agora-code status` to confirm DB path.
+**Install verification:** (1) Run `agora-code install-hooks --claude-code` in your project; (2) Restart Claude Code; (3) Run `agora-code status` to confirm DB path.
 
 **Or manually** — create `.claude/settings.json`:
 
