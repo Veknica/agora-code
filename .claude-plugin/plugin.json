@@ -9,6 +9,7 @@
   "repository": "https://github.com/thebnbrkr/agora-code",
   "license": "Apache-2.0",
   "hooks": "hooks/hooks.json",
+  "outputStyles": "./styles/",
   "mcpServers": {
     "agora-memory": {
       "command": "${CLAUDE_PLUGIN_ROOT}/hooks/mcp-start.sh",
