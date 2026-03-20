@@ -640,6 +640,27 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
                 if finding:
                     parts.append(f"LAST CHECKPOINT\n  {finding[:200]}")
 
+        # ── 1b. Compressed transcript from last session ───────────────────────
+        try:
+            session_row = store._conn_().execute("""
+                SELECT session_data FROM sessions
+                WHERE project_id = ?
+                ORDER BY last_active DESC LIMIT 1
+            """, (pid,)).fetchone()
+            if session_row and session_row[0]:
+                sd = _json.loads(session_row[0])
+                transcript = sd.get("compressed_transcript", [])
+                if transcript:
+                    lines = ["LAST SESSION (compressed)"]
+                    for msg in transcript[-10:]:  # last 10 exchanges
+                        role = msg.get("role", "")
+                        text = msg.get("text", "")[:150]
+                        prefix = "  you: " if role == "user" else "  ai:  "
+                        lines.append(f"{prefix}{text}")
+                    parts.append("\n".join(lines))
+        except Exception:
+            pass
+
         # ── 2. Git log (live) — get recent commit SHAs for learning lookup ───
         def _git(cmd):
             try:

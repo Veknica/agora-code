@@ -47,5 +47,6 @@ All done  → agora-code complete --summary "..."
 
 - **symbol_notes**: every function/class with `start_line`, `end_line`, `signature`, `note`, `code_block`
 - **file_snapshots**: compressed AST outline of each file read
-- **learnings**: structured checkpoint after each session (goal, decisions, next_steps, blockers)
+- **learnings**: commit change notes (one per file per commit) + checkpoint from last session
+- **sessions**: stores compressed transcript of last session — injected as LAST SESSION context on next start
 - **file_changes**: diff history per file, tagged with commit SHA on commit

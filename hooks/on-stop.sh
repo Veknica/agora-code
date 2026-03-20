@@ -202,6 +202,11 @@ staged     = git(["git", "diff", "--cached", "--name-only"]).splitlines()
 files_touched = list({*unstaged, *staged, *files_mentioned})[:20]
 
 # ── Build checkpoint JSON ─────────────────────────────────────────────────────
+transcript_json = json.dumps(
+    [{"role": r, "text": t} for r, t in compressed],
+    ensure_ascii=False
+)
+
 checkpoint = {
     "goal":          goal,
     "decisions":     decisions,
@@ -211,9 +216,10 @@ checkpoint = {
     "branch":        branch,
     "commit_sha":    commit_sha,
     "session_id":    session_id,
+    "transcript":    json.loads(transcript_json),
 }
 
-# ── Store structured learning (one per session, replace previous) ─────────────
+# ── Store structured learning + save transcript to session ────────────────────
 agora_bin = shutil.which("agora-code") or "agora-code"
 
 try:
@@ -226,6 +232,22 @@ try:
         "DELETE FROM learnings WHERE session_id=? AND tags LIKE '%checkpoint%'",
         (session_id,)
     )
+    # Store compressed transcript in session_data
+    existing = conn.execute(
+        "SELECT session_data FROM sessions WHERE session_id=?", (session_id,)
+    ).fetchone()
+    if existing:
+        try:
+            sd = json.loads(existing[0] or "{}")
+        except Exception:
+            sd = {}
+        sd["compressed_transcript"] = json.loads(transcript_json)
+        sd["branch"] = branch
+        sd["commit_sha"] = commit_sha
+        conn.execute(
+            "UPDATE sessions SET session_data=?, branch=?, commit_sha=?, last_active=datetime('now') WHERE session_id=?",
+            (json.dumps(sd), branch, commit_sha, session_id)
+        )
     conn.commit()
     conn.close()
 except Exception:
