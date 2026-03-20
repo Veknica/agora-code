@@ -14,7 +14,7 @@ This project provides persistent memory and API discovery for AI agents.
 | Command | When to use |
 |---|---|
 | `agora-code inject` | Session start — loads goal, hypothesis, last steps |
-| `agora-code summarize <file>` | Before reading large files — 90%+ token reduction |
+| `agora-code summarize <file>` | Before reading large files — 75%+ token reduction |
 | `agora-code learn "<text>"` | You find a bug, gotcha, or decision worth remembering |
 | `agora-code recall "<query>"` | Before starting work — check if it's been solved before |
 | `agora-code checkpoint --goal "..."` | After completing a meaningful step |

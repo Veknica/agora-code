@@ -18,7 +18,7 @@ Everything is automatic via Claude Code hooks. When you read a file, symbols and
 | Command | When to use |
 |---|---|
 | `agora-code inject` | Session start — loads structured checkpoint, learnings, git state, symbol index |
-| `agora-code summarize <file>` | Before reading large files — 90%+ token reduction |
+| `agora-code summarize <file>` | Before reading large files — 75%+ token reduction |
 | `agora-code learn "<text>"` | Force-save a specific finding right now (optional — auto-done by on-stop.sh) |
 | `agora-code recall "<query>"` | Search past findings (optional — auto-done by on-prompt.sh) |
 | `agora-code checkpoint --goal "..."` | Save progress mid-task |
