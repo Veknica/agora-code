@@ -1435,7 +1435,7 @@ def learn_from_commit(sha, quiet):
         tags = item.get("tags") or []
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",")]
-        store.save_learning(
+        store.store_learning(
             finding=item["finding"],
             evidence=item.get("evidence", f"derived from commit {sha}"),
             confidence="confirmed",
