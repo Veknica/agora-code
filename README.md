@@ -618,6 +618,72 @@ Falls back to directory name if no git remote is set.
 
 ---
 
+## Troubleshooting
+
+### Testing the pre-read hook manually
+
+The pre-read hook intercepts large file reads and serves a summary instead. To test it, open a **new terminal**, navigate to your project root, and run:
+
+```bash
+echo '{"file_path": "/path/to/your/large-file.py"}' | bash .claude/hooks/pre-read.sh
+echo "exit code: $?"
+```
+
+**What you should see:**
+- The file summary printed to stdout
+- `exit code: 2` — meaning the hook blocked the read and served the summary instead
+- If the file is under the 100-line threshold, no output and `exit code: 0` (pass through)
+
+**If the hook fails silently**, check the error log:
+
+```bash
+cat /tmp/agora-pre-read-error.log
+```
+
+This log is only created when something goes wrong inside the hook (e.g. `agora-code` not found in PATH, bad JSON output, Python parse failure). If the file doesn't exist, the hook ran without errors.
+
+> **Important:** Run hook tests in a new terminal from the project root — not from inside Claude Code. The hooks run as shell scripts and need `agora-code` on your PATH.
+
+---
+
+### Common issues
+
+**`agora-code` not found in hooks**
+
+Hooks run in a non-interactive shell. If `agora-code` is installed in a virtualenv or via pyenv, the hook may not find it. Fix by using the full path in the hook scripts:
+
+```bash
+which agora-code   # get the full path
+# then open .claude/hooks/pre-read.sh and replace `agora-code` with the full path
+```
+
+**No embeddings / semantic search not working**
+
+```
+⚠️  No embedding generated — set OPENAI_API_KEY for semantic recall.
+   Keyword search will still work.
+```
+
+This is expected if you haven't set an API key. `recall` and `learn` fall back to BM25 keyword search automatically — everything still works, just with less fuzzy matching. To enable semantic search:
+
+```bash
+export OPENAI_API_KEY=sk-...   # or GEMINI_API_KEY / pip install agora-code[local]
+```
+
+**`agentify` fails with "No LLM provider"**
+
+```
+❌ No LLM provider for workflow detection.
+```
+
+Route scanning works without an API key. The LLM step (workflow detection) needs one:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # recommended
+```
+
+---
+
 ## Roadmap
 
 The following integrations are planned but not yet available:
