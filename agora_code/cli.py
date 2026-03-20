@@ -1136,12 +1136,110 @@ def _track_diff_one(file_path: str, committed: bool) -> None:
 
 
 
+def _llm_change_note(diff: str, file_path: str, symbols: str = "") -> Optional[str]:
+    """
+    Call OpenAI (gpt-4o-mini) to generate a 1-2 sentence change note.
+    Returns None if OpenAI is unavailable or call fails — caller falls back to regex.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        symbol_hint = f"\nKnown symbols in this file: {symbols}" if symbols else ""
+        prompt = (
+            f"You are summarizing a code change for a developer memory system.\n"
+            f"File: {file_path}{symbol_hint}\n\n"
+            f"Diff:\n{diff[:3000]}\n\n"
+            f"Write exactly 1-2 sentences describing: what changed, why (if inferrable "
+            f"from the diff), and what it connects to (callers or callees if visible). "
+            f"Format: 'changed <symbol> in <file> to <what> [— connects to <other>]'. "
+            f"Be specific. No preamble."
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            temperature=0.2,
+        )
+        note = resp.choices[0].message.content.strip()
+        return note if note else None
+    except Exception:
+        return None
+
+
+def _llm_derive_learnings(
+    commit_sha: str,
+    commit_message: str,
+    file_notes: list[dict],
+) -> list[dict]:
+    """
+    Call OpenAI to derive 1-3 learnings from a commit.
+    Each learning: {"finding": str, "tags": [str], "type": str, "evidence": str}
+    Returns [] on failure.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return []
+    try:
+        from openai import OpenAI
+        import json as _json
+        client = OpenAI(api_key=api_key)
+
+        notes_text = "\n".join(
+            f"  {n['file_path']}: {n['diff_summary']}" for n in file_notes
+        )
+        prompt = (
+            f"You are building a persistent memory for a developer.\n"
+            f"Commit {commit_sha}: \"{commit_message}\"\n\n"
+            f"Files changed:\n{notes_text}\n\n"
+            f"Derive 1-3 concise learnings a future AI agent should know about this codebase. "
+            f"Focus on: structural facts (what calls what), design decisions (why something was done), "
+            f"or gotchas (what to watch out for). NOT task notes — permanent project intelligence.\n\n"
+            f"Respond with JSON array only:\n"
+            f'[{{"finding": "...", "tags": ["tag1"], "type": "finding|decision", "evidence": "..."}}]'
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content.strip()
+        parsed = _json.loads(raw)
+        # Handle both {"learnings": [...]} and [...]
+        if isinstance(parsed, dict):
+            items = parsed.get("learnings") or parsed.get("items") or list(parsed.values())[0]
+        else:
+            items = parsed
+        return [i for i in items if isinstance(i, dict) and i.get("finding")]
+    except Exception:
+        return []
+
+
 def _summarize_diff(diff: str, file_path: str) -> str:
     """
     Content-aware diff summarizer.
-    Reads the actual added/removed lines to produce a meaningful
-    1-2 sentence description, not just a line count.
+    Tries LLM-generated note first; falls back to regex if unavailable.
     """
+    # Try LLM first — pull symbol context from DB if available
+    try:
+        from agora_code.vector_store import get_store
+        from agora_code.session import _get_project_id, _get_git_branch
+        store = get_store()
+        snaps = store.search_file_snapshots(file_path, k=1)
+        symbols = snaps[0].get("symbols", "") if snaps else ""
+        llm_note = _llm_change_note(diff, file_path, symbols=symbols)
+        if llm_note:
+            import re as _re
+            scale = f"+{len([l for l in diff.splitlines() if l.startswith('+') and not l.startswith('+++')])}" \
+                    f"/-{len([l for l in diff.splitlines() if l.startswith('-') and not l.startswith('---')])}"
+            return f"{llm_note} ({scale})"
+    except Exception:
+        pass
+
     import re
     lines = diff.splitlines()
     added   = [l[1:].strip() for l in lines if l.startswith("+") and not l.startswith("+++")]
@@ -1250,6 +1348,403 @@ def file_history(file_path, limit):
         _echo(f"  {ts}{branch}{sha}{author}")
         _echo(f"    {entry.get('diff_summary', '(no summary)')}{session}")
     _echo("")
+
+
+# --------------------------------------------------------------------------- #
+#  learn-from-commit                                                           #
+# --------------------------------------------------------------------------- #
+
+@main.command("learn-from-commit")
+@click.argument("sha", required=False, default=None)
+@click.option("--quiet", "-q", is_flag=True, default=False)
+def learn_from_commit(sha, quiet):
+    """Derive and store learnings from a git commit (defaults to HEAD).
+
+    Called automatically by on-bash.sh after every git commit.
+    Uses LLM to extract structural facts and design decisions.
+    Falls back to storing commit message as a raw learning if no LLM key.
+
+    \b
+    agora-code learn-from-commit           # HEAD
+    agora-code learn-from-commit abc1234   # specific commit
+    """
+    import subprocess as sp
+    import json as _json
+    from agora_code.vector_store import get_store
+    from agora_code.session import _get_project_id, _get_git_branch, load_session
+
+    # Resolve SHA
+    if not sha:
+        r = sp.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
+        sha = r.stdout.strip()
+    if not sha:
+        _echo("⚠  Could not determine commit SHA.", err=True)
+        return
+
+    # Commit message
+    r = sp.run(["git", "log", "--format=%B", "-1", sha], capture_output=True, text=True)
+    commit_message = r.stdout.strip()
+    if not commit_message:
+        if not quiet:
+            _echo(f"⚠  No commit message found for {sha}.")
+        return
+
+    # Files changed in this commit
+    r = sp.run(["git", "diff-tree", "--no-commit-id", "-r", "--name-only", sha],
+               capture_output=True, text=True)
+    files = [f for f in r.stdout.strip().splitlines() if f.strip()]
+    if not files:
+        r = sp.run(["git", "show", "--name-only", "--format=", sha],
+                   capture_output=True, text=True)
+        files = [f for f in r.stdout.strip().splitlines() if f.strip()]
+
+    store = get_store()
+    project_id = _get_project_id()
+    branch = _get_git_branch()
+    session = load_session()
+    session_id = session.get("session_id") if session else None
+
+    # Get change notes for these files from file_changes (already tracked by on-edit)
+    file_notes = []
+    for fp in files:
+        history = store.get_file_history(fp, limit=3)
+        # Find the entry most likely from this commit
+        note = next(
+            (h for h in history if h.get("commit_sha") == sha),
+            history[0] if history else None,
+        )
+        if note:
+            file_notes.append({"file_path": fp, "diff_summary": note.get("diff_summary", "")})
+        else:
+            file_notes.append({"file_path": fp, "diff_summary": f"modified {fp}"})
+
+    # Derive learnings via LLM
+    learnings = _llm_derive_learnings(sha, commit_message, file_notes)
+
+    # Fallback: store commit message itself as a raw finding
+    if not learnings:
+        learnings = [{
+            "finding": f"[{sha}] {commit_message}",
+            "tags": ["commit"],
+            "type": "finding",
+            "evidence": f"commit message for {sha}",
+        }]
+
+    stored = 0
+    for item in learnings:
+        tags = item.get("tags") or []
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",")]
+        store.save_learning(
+            finding=item["finding"],
+            evidence=item.get("evidence", f"derived from commit {sha}"),
+            confidence="confirmed",
+            tags=tags,
+            type=item.get("type", "finding"),
+            branch=branch,
+            files=files,
+            project_id=project_id,
+            session_id=session_id,
+            commit_sha=sha,
+        )
+        stored += 1
+
+    if not quiet:
+        _echo(f"✅ {stored} learning(s) stored for commit {sha}: {commit_message[:60]}")
+
+
+# --------------------------------------------------------------------------- #
+#  show  — pretty view of what inject loaded                                   #
+# --------------------------------------------------------------------------- #
+
+@main.command("show")
+@click.option("--json-out", "json_out", is_flag=True, default=False, help="Output as JSON")
+def show(json_out):
+    """Show everything currently in session context — what inject would load.
+
+    Renders as a rich markdown table in the terminal so you can see exactly
+    what the AI is working with.
+
+    \b
+    agora-code show
+    agora-code show --json-out
+    """
+    import subprocess as sp
+    import json as _json
+    from agora_code.vector_store import get_store
+    from agora_code.session import (
+        load_session, _get_project_id, _get_git_branch,
+        _get_commit_sha, _get_uncommitted_files,
+    )
+
+    store = get_store()
+    project_id = _get_project_id()
+    branch = _get_git_branch()
+    session = load_session()
+    session_data = _json.loads(session.get("session_data") or "{}") if session else {}
+
+    # ── Recent commits on branch ──────────────────────────────────────────────
+    r = sp.run(
+        ["git", "log", "--format=%h|%s|%ai", "-6"],
+        capture_output=True, text=True,
+    )
+    recent_commits = []
+    for line in r.stdout.strip().splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3:
+            recent_commits.append({"sha": parts[0], "msg": parts[1], "date": parts[2][:10]})
+
+    # ── Learnings for last 3 commits on this branch ──────────────────────────
+    branch_shas = [c["sha"] for c in recent_commits[:3]]
+    commit_learnings = store.get_learnings_for_commits(branch_shas, project_id=project_id)
+
+    # ── Uncommitted file changes ──────────────────────────────────────────────
+    dirty_files = _get_uncommitted_files()
+    uncommitted_changes = store.get_uncommitted_file_changes(
+        project_id=project_id, branch=branch
+    ) if dirty_files else []
+
+    # ── Session checkpoint ────────────────────────────────────────────────────
+    session_goal = session.get("goal", "") if session else ""
+    session_decisions = session_data.get("decisions_made", []) if session_data else []
+    session_next = session_data.get("next_steps", []) if session_data else []
+
+    if json_out:
+        import json
+        click.echo(json.dumps({
+            "session": {
+                "goal": session_goal,
+                "decisions": session_decisions,
+                "next_steps": session_next,
+            },
+            "uncommitted_changes": uncommitted_changes,
+            "commit_learnings": commit_learnings,
+            "recent_commits": recent_commits,
+            "dirty_files": dirty_files,
+        }, indent=2))
+        return
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+        from rich.text import Text
+        console = Console()
+        _use_rich = True
+    except ImportError:
+        console = None
+        _use_rich = False
+
+    def _line(s=""):
+        click.echo(s)
+
+    _line("# AGORA SESSION CONTEXT")
+    _line()
+
+    # Session checkpoint
+    _line("## Last Session")
+    if session_goal:
+        _line(f"  goal:      {session_goal}")
+    if session_decisions:
+        for d in session_decisions[:3]:
+            _line(f"  decided:   {d}")
+    if session_next:
+        for n in session_next[:2]:
+            _line(f"  next:      {n}")
+    if not session_goal:
+        _line("  (no session checkpoint)")
+    _line()
+
+    # Uncommitted work
+    if uncommitted_changes:
+        _line("## Uncommitted Work")
+        if _use_rich:
+            t = Table(show_header=True, header_style="bold cyan")
+            t.add_column("File", style="yellow")
+            t.add_column("Change Note")
+            for ch in uncommitted_changes[:10]:
+                fp = ch.get("file_path", "")
+                note = ch.get("diff_summary", "(no note)")
+                t.add_row(fp.split("/")[-1], note)
+            console.print(t)
+        else:
+            for ch in uncommitted_changes[:10]:
+                _line(f"  {ch.get('file_path','')}")
+                _line(f"    {ch.get('diff_summary','')}")
+        _line()
+    elif dirty_files:
+        _line("## Uncommitted Work")
+        _line("  dirty files (no change notes yet — run agora-code track-diff):")
+        for f in dirty_files[:8]:
+            _line(f"    {f}")
+        _line()
+
+    # Commit learnings
+    if commit_learnings:
+        _line(f"## Learnings (last {len(branch_shas)} commits on {branch})")
+        if _use_rich:
+            t = Table(show_header=True, header_style="bold cyan")
+            t.add_column("Finding")
+            t.add_column("Commit", width=8)
+            t.add_column("Tags", width=20)
+            for lrn in commit_learnings[:8]:
+                tags = lrn.get("tags") or "[]"
+                if isinstance(tags, str):
+                    try:
+                        import json
+                        tags = ", ".join(json.loads(tags))
+                    except Exception:
+                        pass
+                finding = lrn.get("finding", "")[:80]
+                sha = (lrn.get("commit_sha") or "")[:7]
+                t.add_row(finding, sha, str(tags)[:20])
+            console.print(t)
+        else:
+            for lrn in commit_learnings[:8]:
+                sha = (lrn.get("commit_sha") or "")[:7]
+                _line(f"  [{sha}] {lrn.get('finding','')}")
+        _line()
+
+    # Git state
+    _line("## Git State")
+    _line(f"  branch:  {branch or '(unknown)'}")
+    _line(f"  dirty:   {', '.join(dirty_files) if dirty_files else '(clean)'}")
+    if recent_commits:
+        _line("  recent commits:")
+        for c in recent_commits[:4]:
+            _line(f"    {c['sha']}  {c['date']}  {c['msg'][:60]}")
+    _line()
+
+
+# --------------------------------------------------------------------------- #
+#  notes  — view AI-written change notes                                       #
+# --------------------------------------------------------------------------- #
+
+@main.command("notes")
+@click.argument("file_path", required=False, default=None)
+@click.option("--limit", "-n", default=20)
+def notes(file_path, limit):
+    """Show AI-written change notes for files.
+
+    \b
+    agora-code notes                     # all recent notes
+    agora-code notes agora_code/auth.py  # notes for a specific file
+    """
+    from agora_code.vector_store import get_store
+    from agora_code.session import _get_project_id
+
+    store = get_store()
+    project_id = _get_project_id()
+
+    if file_path:
+        rows = store.get_file_history(file_path, limit=limit)
+    else:
+        rows = store.get_recent_file_changes_for_project(project_id, limit=limit)
+
+    if not rows:
+        _echo("📭 No change notes found.")
+        _echo("   Notes are written automatically when files are edited.")
+        return
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        console = Console()
+        t = Table(show_header=True, header_style="bold cyan")
+        t.add_column("File", style="yellow", max_width=30)
+        t.add_column("Change Note")
+        t.add_column("Commit", width=8)
+        t.add_column("Date", width=10)
+        for row in rows:
+            fp = (row.get("file_path") or "").split("/")[-1]
+            note = row.get("diff_summary") or "(no note)"
+            sha = (row.get("commit_sha") or "")[:7]
+            date = (row.get("timestamp") or "")[:10]
+            t.add_row(fp, note, sha, date)
+        console.print(t)
+    except ImportError:
+        for row in rows:
+            ts = (row.get("timestamp") or "")[:10]
+            sha = (row.get("commit_sha") or "")[:7]
+            _echo(f"  [{ts}] @{sha}  {row.get('file_path','')}:")
+            _echo(f"    {row.get('diff_summary','')}")
+
+
+# --------------------------------------------------------------------------- #
+#  commit-log  — learnings per commit                                          #
+# --------------------------------------------------------------------------- #
+
+@main.command("commit-log")
+@click.argument("sha", required=False, default=None)
+@click.option("--limit", "-n", default=5, help="Number of recent commits to show")
+def commit_log(sha, limit):
+    """Show learnings stored per commit.
+
+    \b
+    agora-code commit-log              # last N commits with their learnings
+    agora-code commit-log abc1234      # specific commit
+    """
+    import subprocess as sp
+    from agora_code.vector_store import get_store
+    from agora_code.session import _get_project_id
+
+    store = get_store()
+    project_id = _get_project_id()
+
+    if sha:
+        commits = [{"sha": sha, "msg": "", "date": ""}]
+    else:
+        r = sp.run(["git", "log", "--format=%h|%s|%ai", f"-{limit}"],
+                   capture_output=True, text=True)
+        commits = []
+        for line in r.stdout.strip().splitlines():
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                commits.append({"sha": parts[0], "msg": parts[1], "date": parts[2][:10]})
+
+    if not commits:
+        _echo("📭 No commits found.")
+        return
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+        console = Console()
+        _use_rich = True
+    except ImportError:
+        _use_rich = False
+
+    for commit in commits:
+        c_sha = commit["sha"]
+        c_msg = commit["msg"]
+        c_date = commit["date"]
+        learnings = store.get_learnings_for_commit(c_sha, project_id=project_id)
+
+        header = f"  {c_sha}  {c_date}  {c_msg[:60]}" if c_msg else f"  {c_sha}"
+        click.echo(f"\n{header}")
+        if learnings:
+            if _use_rich:
+                t = Table(show_header=False, box=None, padding=(0, 2))
+                t.add_column("type", style="dim", width=10)
+                t.add_column("finding")
+                for lrn in learnings:
+                    import json
+                    tags = lrn.get("tags") or "[]"
+                    try:
+                        tags_str = ", ".join(json.loads(tags)) if isinstance(tags, str) else ", ".join(tags)
+                    except Exception:
+                        tags_str = str(tags)
+                    t.add_row(
+                        lrn.get("type", "finding"),
+                        f"{lrn.get('finding','')}" + (f"  [{tags_str}]" if tags_str else ""),
+                    )
+                console.print(t)
+            else:
+                for lrn in learnings:
+                    click.echo(f"    · {lrn.get('finding','')}")
+        else:
+            click.echo("    (no learnings stored — run: agora-code learn-from-commit " + c_sha + ")")
 
 
 # --------------------------------------------------------------------------- #

@@ -384,6 +384,37 @@ class VectorStore:
             ON api_calls(session_id, timestamp)
         """)
 
+        # ── Commit learnings junction ────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS commit_learnings (
+                commit_sha  TEXT NOT NULL,
+                learning_id TEXT NOT NULL,
+                project_id  TEXT,
+                timestamp   TEXT NOT NULL,
+                PRIMARY KEY (commit_sha, learning_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_commit_learnings_sha
+            ON commit_learnings(commit_sha)
+        """)
+
+        # Safe migration: add commit_sha to learnings
+        try:
+            conn.execute("ALTER TABLE learnings ADD COLUMN commit_sha TEXT")
+        except Exception:
+            pass
+        # Safe migration: add last_injected_at to learnings
+        try:
+            conn.execute("ALTER TABLE learnings ADD COLUMN last_injected_at TEXT")
+        except Exception:
+            pass
+        # Safe migration: add commit_message to file_changes
+        try:
+            conn.execute("ALTER TABLE file_changes ADD COLUMN commit_message TEXT")
+        except Exception:
+            pass
+
         conn.commit()
 
     # ----------------------------------------------------------------------- #
@@ -968,6 +999,7 @@ class VectorStore:
         namespace: str = "personal",
         project_id: Optional[str] = None,
         type: str = "finding",  # decision|finding|blocker|next_step
+        commit_sha: Optional[str] = None,
     ) -> str:
         """Store a learning and (optionally) its embedding. Returns learning ID."""
         conn = self._conn_()
@@ -980,12 +1012,12 @@ class VectorStore:
             INSERT INTO learnings
                 (id, session_id, timestamp, api_base_url, endpoint_method,
                  endpoint_path, finding, evidence, confidence, tags,
-                 branch, files, namespace, project_id, type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 branch, files, namespace, project_id, type, commit_sha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             lid, session_id, now, api_base_url, endpoint_method,
             endpoint_path, finding, evidence, confidence, tags_json,
-            branch, files_json, namespace, project_id, type,
+            branch, files_json, namespace, project_id, type, commit_sha,
         ))
 
         if embedding and self._vec_available:
@@ -997,7 +1029,112 @@ class VectorStore:
             """, (lid, self._pack(embedding)))
 
         conn.commit()
+
+        # Link to commit if provided
+        if commit_sha:
+            self.link_learning_to_commit(lid, commit_sha, project_id=project_id)
+
         return lid
+
+    def link_learning_to_commit(
+        self,
+        learning_id: str,
+        commit_sha: str,
+        project_id: Optional[str] = None,
+    ) -> None:
+        """Create a commit_learnings junction entry."""
+        conn = self._conn_()
+        conn.execute("""
+            INSERT OR IGNORE INTO commit_learnings (commit_sha, learning_id, project_id, timestamp)
+            VALUES (?, ?, ?, ?)
+        """, (commit_sha, learning_id, project_id, _now()))
+        conn.commit()
+
+    def get_learnings_for_commit(
+        self,
+        commit_sha: str,
+        project_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Return all learnings linked to a specific commit."""
+        filters = ["cl.commit_sha = ?"]
+        params: list = [commit_sha]
+        if project_id:
+            filters.append("(l.project_id = ? OR l.project_id IS NULL)")
+            params.append(project_id)
+        where = " AND ".join(filters)
+        rows = self._conn_().execute(f"""
+            SELECT l.id, l.finding, l.evidence, l.confidence, l.tags,
+                   l.type, l.branch, l.files, l.timestamp, l.commit_sha
+            FROM commit_learnings cl
+            JOIN learnings l ON l.id = cl.learning_id
+            WHERE {where}
+            ORDER BY l.timestamp
+        """, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_learnings_for_commits(
+        self,
+        commit_shas: List[str],
+        project_id: Optional[str] = None,
+        limit: int = 12,
+    ) -> List[Dict]:
+        """Return learnings for a list of commits, ordered by recency."""
+        if not commit_shas:
+            return []
+        placeholders = ",".join("?" * len(commit_shas))
+        params: list = list(commit_shas)
+        extra = ""
+        if project_id:
+            extra = "AND (l.project_id = ? OR l.project_id IS NULL)"
+            params.append(project_id)
+        rows = self._conn_().execute(f"""
+            SELECT l.id, l.finding, l.evidence, l.confidence, l.tags,
+                   l.type, l.branch, l.files, l.timestamp, l.commit_sha
+            FROM commit_learnings cl
+            JOIN learnings l ON l.id = cl.learning_id
+            WHERE cl.commit_sha IN ({placeholders}) {extra}
+            ORDER BY l.timestamp DESC
+            LIMIT ?
+        """, (*params, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_learnings_injected(self, learning_ids: List[str]) -> None:
+        """Update last_injected_at for a batch of learning IDs."""
+        if not learning_ids:
+            return
+        now = _now()
+        placeholders = ",".join("?" * len(learning_ids))
+        self._conn_().execute(
+            f"UPDATE learnings SET last_injected_at = ? WHERE id IN ({placeholders})",
+            (now, *learning_ids),
+        )
+        self._conn_().commit()
+
+    def get_uncommitted_file_changes(
+        self,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict]:
+        """Return uncommitted file_changes for current project/branch."""
+        filters = ["status = 'uncommitted'"]
+        params: list = []
+        if project_id:
+            filters.append("project_id = ?")
+            params.append(project_id)
+        if branch:
+            filters.append("branch = ?")
+            params.append(branch)
+        where = " AND ".join(filters)
+        rows = self._conn_().execute(f"""
+            SELECT file_path, diff_summary, diff_snippet, commit_sha,
+                   recorded_at_commit_sha, timestamp
+            FROM file_changes
+            WHERE {where}
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (*params, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def search_learnings_semantic(
         self,

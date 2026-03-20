@@ -74,6 +74,17 @@ try:
     )
 except Exception:
     pass
+
+# Derive and store learnings for this commit
+try:
+    import subprocess as _sp
+    _sp.run(
+        ["agora-code", "learn-from-commit", commit_sha, "--quiet"],
+        timeout=30,
+        capture_output=True,
+    )
+except Exception:
+    pass
 PYEOF
 
 exit 0
