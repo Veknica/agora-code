@@ -16,7 +16,10 @@
       "author": {
         "name": "thebnbrkr"
       },
+      "homepage": "https://github.com/thebnbrkr/agora-code",
+      "repository": "https://github.com/thebnbrkr/agora-code",
       "license": "Apache-2.0",
+      "category": "development",
       "keywords": ["memory", "session", "context", "ast", "summarize", "persistence", "hooks"]
     }
   ]
