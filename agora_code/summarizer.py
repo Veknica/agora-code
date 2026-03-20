@@ -257,13 +257,35 @@ _TS_QUERIES: dict[str, str] = {
     """,
     "elixir": """
         (call
-            target: (identifier) @_def
-            arguments: (arguments (alias) @class.name)
-            (#match? @_def "^(defmodule)$")) @class
+            (identifier) @_def
+            (arguments (alias) @class.name)
+            (#match? @_def "^(defmodule|defprotocol|defimpl)$")) @class
         (call
-            target: (identifier) @_def
-            arguments: (arguments (identifier) @func.name)
-            (#match? @_def "^(def|defp|defmacro)$")) @func
+            (identifier) @_def
+            (arguments (_) @class.name)
+            (#match? @_def "^(defstruct)$")) @class
+        (call
+            (identifier) @_def
+            (arguments
+                (call
+                    (identifier) @func.name
+                    (arguments) @func.params))
+            (#match? @_def "^(def|defmacro|defguard)$")) @func
+        (call
+            (identifier) @_def
+            (arguments (identifier) @func.name)
+            (#match? @_def "^(def|defmacro|defguard)$")) @func
+        (call
+            (identifier) @_def
+            (arguments
+                (call
+                    (identifier) @func.private.name
+                    (arguments) @func.private.params))
+            (#match? @_def "^(defp|defmacrop|defguardp)$")) @func.private
+        (call
+            (identifier) @_def
+            (arguments (identifier) @func.private.name)
+            (#match? @_def "^(defp|defmacrop|defguardp)$")) @func.private
     """,
     "zig": """
         (ContainerDecl) @class
@@ -483,9 +505,10 @@ def _summarize_with_treesitter(content: str, file_path: str, lang: str) -> tuple
     source_lines = content.splitlines()
 
     # --- collect functions ---
-    func_nodes_raw = captures.get("func", [])
-    func_name_nodes = captures.get("func.name", [])
-    func_param_nodes = captures.get("func.params", [])
+    func_nodes_raw = list(captures.get("func", [])) + list(captures.get("func.private", []))
+    func_name_nodes = list(captures.get("func.name", [])) + list(captures.get("func.private.name", []))
+    func_param_nodes = list(captures.get("func.params", [])) + list(captures.get("func.private.params", []))
+    private_lines: set[int] = {n.start_point[0] + 1 for n in captures.get("func.private.name", [])}
 
     # build line→params map for lookup
     param_by_line: dict[int, str] = {}
@@ -502,7 +525,7 @@ def _summarize_with_treesitter(content: str, file_path: str, lang: str) -> tuple
         if desc:
             func_desc_by_line[fstart] = desc
 
-    funcs: list[tuple[str, str, int, str]] = []  # (name, params, line, desc)
+    funcs: list[tuple[str, str, int, str, bool]] = []  # (name, params, line, desc, is_private)
     seen_funcs: set[str] = set()
     for node in func_name_nodes:
         name = node.text.decode("utf-8", errors="replace").strip()
@@ -513,9 +536,8 @@ def _summarize_with_treesitter(content: str, file_path: str, lang: str) -> tuple
         key = f"{name}:{line}"
         if key not in seen_funcs:
             seen_funcs.add(key)
-            # the outer func node starts at line; look it up
             desc = func_desc_by_line.get(line, "")
-            funcs.append((name, params, line, desc))
+            funcs.append((name, params, line, desc, line in private_lines))
 
     # --- class descriptions from preceding comment ---
     class_desc_by_line: dict[int, str] = {}
@@ -546,23 +568,25 @@ def _summarize_with_treesitter(content: str, file_path: str, lang: str) -> tuple
         desc_str = f" — {desc}" if desc else ""
         display = class_decl_by_line.get(start, f"class {name}")
         parts.append(f"\n{display}{desc_str} [line {start}]")
-        for fname, fparams, fline, fdesc in funcs:
+        for fname, fparams, fline, fdesc, fpriv in funcs:
             if start <= fline <= end:
                 fdesc_str = f" — {fdesc}" if fdesc else ""
-                parts.append(f"  {fname}{fparams}{fdesc_str} [line {fline}]")
+                priv_str = " (private)" if fpriv else ""
+                parts.append(f"  {fname}{fparams}{priv_str}{fdesc_str} [line {fline}]")
 
     # top-level functions (not inside any class range)
     class_ranges = [(start, end) for _, start, end in classes]
     top_funcs = [
-        (fname, fparams, fline, fdesc) for fname, fparams, fline, fdesc in funcs
+        (fname, fparams, fline, fdesc, fpriv) for fname, fparams, fline, fdesc, fpriv in funcs
         if not any(start <= fline <= end for start, end in class_ranges)
     ]
     if top_funcs:
         if classes:
             parts.append("")
-        for fname, fparams, fline, fdesc in top_funcs:
+        for fname, fparams, fline, fdesc, fpriv in top_funcs:
             fdesc_str = f" — {fdesc}" if fdesc else ""
-            parts.append(f"{fname}{fparams}{fdesc_str} [line {fline}]")
+            priv_str = " (private)" if fpriv else ""
+            parts.append(f"{fname}{fparams}{priv_str}{fdesc_str} [line {fline}]")
 
     if parts:
         return "\n".join(parts), "treesitter"
