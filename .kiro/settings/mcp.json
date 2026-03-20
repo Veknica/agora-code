@@ -16,7 +16,8 @@
         "search_symbols",
         "summarize_file",
         "read_file_range",
-        "index_file"
+        "index_file",
+        "log_search"
       ]
     }
   }

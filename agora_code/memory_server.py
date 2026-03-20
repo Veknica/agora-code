@@ -337,6 +337,38 @@ _TOOLS = [
             },
             "required": ["file_path"]
         }
+    },
+    {
+        "name": "log_search",
+        "description": (
+            "Log a search or grep operation to persistent memory so it can be recalled later. "
+            "Stores what was searched, which files matched, and when — searchable across sessions. "
+            "USE THIS AFTER: any grep, file search, or symbol search so future sessions can see "
+            "what was already investigated (e.g. 'searched for sqlite3BtreeInsert 3 sessions ago, found in btree.c:9394')."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What was searched for"
+                },
+                "matched_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Files that contained matches, e.g. ['src/btree.c:9394', 'src/btreeInt.h:531']"
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Which tool was used: grepSearch, fileSearch, search_symbols, etc."
+                },
+                "result_summary": {
+                    "type": "string",
+                    "description": "One-line summary of what was found"
+                }
+            },
+            "required": ["query"]
+        }
     }
 ]
 
@@ -820,6 +852,38 @@ async def _handle_index_file(params: dict) -> str:
         return f"Error indexing {file_path}: {e}"
 
 
+async def _handle_log_search(params: dict) -> str:
+    from agora_code.vector_store import get_store
+    from agora_code.embeddings import get_embedding
+    from agora_code.session import _get_project_id, _get_git_branch
+
+    query = params.get("query", "").strip()
+    if not query:
+        return "Error: query is required."
+
+    matched_files = params.get("matched_files", [])
+    tool = params.get("tool", "search")
+    result_summary = params.get("result_summary", "")
+
+    files_str = ", ".join(matched_files[:10]) if matched_files else "no matches"
+    finding = f"[{tool}] searched: '{query}' → {files_str}"
+    if result_summary:
+        finding += f" — {result_summary}"
+
+    embedding = get_embedding(finding)
+    store = get_store()
+    store.store_learning(
+        finding,
+        confidence="confirmed",
+        tags=["search-log", tool],
+        embedding=embedding,
+        branch=_get_git_branch(),
+        project_id=_get_project_id(),
+        files=matched_files[:5],
+    )
+    return f"Logged: {finding[:120]}"
+
+
 _HANDLERS = {
     "get_session_context":   _handle_get_session_context,
     "save_checkpoint":       _handle_save_checkpoint,
@@ -836,6 +900,7 @@ _HANDLERS = {
     "summarize_file":        _handle_summarize_file,
     "read_file_range":       _handle_read_file_range,
     "index_file":            _handle_index_file,
+    "log_search":            _handle_log_search,
 }
 
 
