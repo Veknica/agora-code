@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "agora: auto checkpoint",
+  "description": "Save session checkpoint after every agent turn",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "/Library/Frameworks/Python.framework/Versions/3.10/bin/agora-code checkpoint --quiet 2>/dev/null || true",
+    "timeout": 10
+  }
+}

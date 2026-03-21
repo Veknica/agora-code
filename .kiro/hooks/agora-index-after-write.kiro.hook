@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "agora: index after write",
+  "description": "Index file symbols into memory DB after editing",
+  "when": {
+    "type": "postToolUse",
+    "toolTypes": [
+      "writeFile"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Call index_file from agora-memory for the file that was just written so its symbols are searchable in future sessions."
+  },
+  "workspaceFolderName": "agora-code",
+  "shortName": "agora-index-after-write"
+}

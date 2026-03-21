@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "agora: session inject",
+  "description": "Inject last session context before every prompt",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "/Library/Frameworks/Python.framework/Versions/3.10/bin/agora-code inject --quiet 2>/dev/null || true",
+    "timeout": 10
+  },
+  "workspaceFolderName": "agora-code",
+  "shortName": "agora-session-inject"
+}
