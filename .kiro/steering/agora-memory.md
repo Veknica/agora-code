@@ -18,6 +18,8 @@ You have access to the `agora-memory` MCP server, which gives you persistent mem
 | About to read a large file | `summarize_file` first, then read only the section you need |
 | Need a specific line range from a file | `read_file_range` |
 | Just read/edited a file, want symbols searchable | `index_file` |
+| Want to save a finding for the whole team/project | `store_team_learning` |
+| Searching for cross-session team knowledge | `recall_team` |
 
 ## Rules
 

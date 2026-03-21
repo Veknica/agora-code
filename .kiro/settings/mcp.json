@@ -17,7 +17,9 @@
         "summarize_file",
         "read_file_range",
         "index_file",
-        "log_search"
+        "log_search",
+        "store_team_learning",
+        "recall_team"
       ]
     }
   }
