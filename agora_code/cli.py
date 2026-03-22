@@ -834,8 +834,8 @@ def kiro_sync(quiet, workspace):
     """Parse the latest Kiro session for this workspace and store it in memory.
 
     \b
-    Extracts user questions and session title from Kiro's local session storage,
-    stores them as a learning, and saves a checkpoint with the session goal.
+    Extracts user questions AND full assistant responses from Kiro's local
+    session storage, stores them as learnings, and saves a checkpoint.
     Run this from the Agent Stop hook to capture what was explored each session.
 
     \b
@@ -853,14 +853,12 @@ def kiro_sync(quiet, workspace):
 
     # Kiro base64-encodes the workspace path as the session folder name
     encoded = base64.b64encode(ws_path.encode()).decode().rstrip("=")
-    # Kiro uses URL-safe base64 with no padding
     sessions_root = os.path.expanduser(
         "~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/workspace-sessions"
     )
     session_dir = os.path.join(sessions_root, encoded)
 
     if not os.path.isdir(session_dir):
-        # Try with padding variants
         for pad in ["", "=", "=="]:
             candidate = os.path.join(sessions_root, encoded + pad)
             if os.path.isdir(candidate):
@@ -871,7 +869,6 @@ def kiro_sync(quiet, workspace):
                 click.echo(f"No Kiro sessions found for {ws_path}", err=True)
             return
 
-    # Find the most recently modified session JSON (not sessions.json index)
     session_files = [
         f for f in glob.glob(os.path.join(session_dir, "*.json"))
         if not f.endswith("sessions.json")
@@ -894,28 +891,71 @@ def kiro_sync(quiet, workspace):
     title = data.get("title", "")
     history = data.get("history", [])
 
-    # Extract user questions
-    questions = []
+    # Build a map of executionId -> assistant 'say' response
+    # These live in execution files scattered under kiro.kiroagent/<hash>/414d.../
+    kiro_root = os.path.expanduser(
+        "~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent"
+    )
+    exec_id_to_response: dict = {}
+    exec_ids_in_session = [
+        entry["executionId"] for entry in history if "executionId" in entry
+    ]
+    if exec_ids_in_session:
+        # Search execution files for matching IDs (they have no extension)
+        target_ids = set(exec_ids_in_session)
+        for root_dir, dirs, files in os.walk(kiro_root):
+            # Skip workspace-sessions itself
+            if "workspace-sessions" in root_dir:
+                continue
+            for fname in files:
+                if fname.endswith(".json") or fname.endswith(".chat") or fname.endswith(".md"):
+                    continue
+                fpath = os.path.join(root_dir, fname)
+                try:
+                    with open(fpath, "rb") as f:
+                        head = f.read(200)
+                    # Quick check before full parse
+                    if not any(eid[:8].encode() in head for eid in target_ids):
+                        continue
+                    with open(fpath) as f:
+                        exec_data = _json.load(f)
+                    eid = exec_data.get("executionId", "")
+                    if eid not in target_ids:
+                        continue
+                    # Extract 'say' action output — this is the final assistant text
+                    for action in exec_data.get("actions", []):
+                        if action.get("actionType") == "say":
+                            msg = action.get("output", {}).get("message", "")
+                            if msg:
+                                exec_id_to_response[eid] = msg
+                                break
+                except Exception:
+                    continue
+
+    # Build Q&A pairs: user question + matched assistant response
+    qa_pairs = []
     for entry in history:
         msg = entry.get("message", {})
-        if msg.get("role") == "user":
+        role = msg.get("role", "")
+        eid = entry.get("executionId")
+
+        if role == "user":
             content = msg.get("content", "")
+            text = ""
             if isinstance(content, list):
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text":
                         text = c.get("text", "").strip()
-                        if text and len(text) > 5:
-                            questions.append(text)
-            elif isinstance(content, str) and len(content.strip()) > 5:
-                questions.append(content.strip())
+                        break
+            elif isinstance(content, str):
+                text = content.strip()
+            if text and len(text) > 5:
+                qa_pairs.append({"q": text, "a": ""})
 
-    if not questions:
-        if not quiet:
-            click.echo("No user messages found in session.", err=True)
-        return
-
-    last_question = questions[-1]
-    all_questions = " | ".join(questions)
+        elif role == "assistant" and eid and qa_pairs:
+            response = exec_id_to_response.get(eid, "")
+            if response:
+                qa_pairs[-1]["a"] = response
 
     filler = re.compile(
         r'^(hi|hey|hello|ok|okay|yes|no|sure|thanks|bye|lol|cool|great|nice|yep|nope|got it)\b',
@@ -925,32 +965,49 @@ def kiro_sync(quiet, workspace):
     def is_substantive(t):
         return len(t) > 20 and not filler.match(t)
 
-    substantive = [q for q in questions if is_substantive(q)]
-    if not substantive:
+    substantive_pairs = [p for p in qa_pairs if is_substantive(p["q"])]
+    if not substantive_pairs:
         if not quiet:
-            click.echo("No substantive questions found.", err=True)
+            click.echo("No substantive Q&A found.", err=True)
         return
 
     vs = get_store()
 
-    # Store as a learning so inject picks it up
-    summary = f"Kiro session '{title}': explored — {' | '.join(substantive[-5:])}"
+    # Build one compact summary per exchange: "Q → key finding (first sentence of answer)"
+    # This keeps inject short — one line per exchange, not full chat logs
+    compact_lines = []
+    for pair in substantive_pairs:
+        q = pair["q"][:100].rstrip("?").strip()
+        a = pair["a"].strip()
+        if a:
+            # Take only the first meaningful sentence of the answer
+            first_sentence = re.split(r'(?<=[.!?])\s', a)[0][:150].strip()
+            compact_lines.append(f"{q} → {first_sentence}")
+        else:
+            compact_lines.append(q)
+
+    # Single overview learning — one line per exchange, capped at 600 chars total
+    overview = f"Kiro session '{title}': " + " | ".join(compact_lines)
     vs.store_learning(
-        finding=summary,
+        finding=overview[:700],
         confidence="confirmed",
-        tags=["kiro-session", "conversation-summary"],
+        tags=["kiro-session", "session-overview"],
     )
 
-    # Save a checkpoint with the last question as the goal
+    last_question = substantive_pairs[-1]["q"]
+    last_answer = substantive_pairs[-1]["a"]
+
+    # Checkpoint: goal = last question, action = one-line summary of what was found
+    last_finding = compact_lines[-1] if compact_lines else last_question[:150]
     from agora_code.session import load_session, save_session
     session = load_session() or {}
     session["goal"] = last_question[:200]
-    session["action"] = f"Kiro session: {title}"
+    session["action"] = last_finding[:200]
     session["status"] = "complete"
     save_session(session)
 
     if not quiet:
-        click.echo(f"kiro-sync: stored {len(substantive)} questions from '{title}'")
+        click.echo(f"kiro-sync: summarized {len(substantive_pairs)} exchanges from '{title}'")
 
 
 # --------------------------------------------------------------------------- #

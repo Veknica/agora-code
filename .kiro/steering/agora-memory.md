@@ -4,49 +4,59 @@ inclusion: always
 
 # Persistent Memory via agora-memory MCP
 
-You have access to the `agora-memory` MCP server, which gives you persistent memory across sessions — goals, discoveries, file history, and learnings survive restarts.
+You have access to the `agora-memory` MCP server for persistent memory across sessions. The shell hooks handle session inject and checkpointing automatically — you only need to call MCP tools for deeper work.
 
-## When to use each tool
+## What happens automatically (shell hooks, 0 credits)
+
+- **Every prompt**: `agora-code inject` runs and prepends LEARNINGS + last session context to your input
+- **Every agent stop**: `agora-code kiro-sync` parses the session, stores a compact summary as a learning, saves a checkpoint with the last goal
+- **Spec task start/end**: inject and checkpoint fire automatically
+
+## When to call MCP tools manually
 
 | Situation | Tool |
 |---|---|
-| Starting a new conversation | `get_session_context` |
-| Completed a meaningful step | `save_checkpoint` |
+| Need full structured session detail | `get_session_context` |
+| Completed a meaningful step mid-session | `save_checkpoint` |
 | Discovered something non-obvious | `store_learning` |
-| Starting a task — check if already solved | `recall_learnings` |
-| Session is fully done | `complete_session` |
-| About to read a large file | `summarize_file` first, then read only the section you need |
-| Need a specific line range from a file | `read_file_range` |
-| Just read/edited a file, want symbols searchable | `index_file` |
-| Want to save a finding for the whole team/project | `store_team_learning` |
-| Searching for cross-session team knowledge | `recall_team` |
+| Starting a task — check if solved before | `recall_learnings` |
+| Session fully done | `complete_session` |
+| About to read a large file | `summarize_file` → then `read_file_range` |
+| Need a specific line range | `read_file_range` |
+| Just edited a file, want symbols searchable | `index_file` |
+| Save a finding for the whole team | `store_team_learning` |
+| Search team-wide knowledge | `recall_team` |
 
 ## Rules
 
-1. **Always call `get_session_context` at the start** of every new conversation before doing anything else. This loads what was being worked on last session.
+1. **Don't call `get_session_context` on every prompt** — inject already loads context via the shell hook. Only call it when you need the full structured detail (hypothesis, next steps, files changed).
 
-1a. **Before reading any file**, call `summarize_file` first to get an AST outline with function names and line numbers. Then use `read_file_range` to read only the section you need. This saves 90%+ tokens on large files.
+2. **Before reading any file over ~100 lines**, call `summarize_file` to get the AST outline with function names and line numbers. Then use `read_file_range` for just the section you need. Saves 90%+ tokens.
 
-2. **Call `save_checkpoint`** after any meaningful step completes (task done, bug fixed, decision made). Include `goal`, `action`, and `files_changed`.
+3. **Call `save_checkpoint`** after meaningful steps — bug fixed, feature added, decision made. Include `goal`, `action`, `files_changed`.
 
-3. **Call `store_learning`** whenever you discover something non-obvious — a gotcha, a pattern, an API quirk, a constraint. These are searchable across all future sessions.
+4. **Call `store_learning`** for non-obvious discoveries — gotchas, API quirks, architectural constraints. These are searchable in all future sessions.
 
-4. **Call `recall_learnings`** before starting a new task to check if it's been attempted or solved before.
+5. **Call `recall_learnings`** before starting a new task to check if it's been done before.
 
-5. **Call `complete_session`** when the user says they're done or wrapping up.
+6. **Call `complete_session`** when the user says they're done.
 
 ## Example flow
 
 ```
-Session start:
-  → get_session_context()            # What was I doing?
+Session start (inject already ran):
+  → Only call get_session_context() if you need full structured detail
 
 Before new task:
-  → recall_learnings("auth token")   # Solved before?
+  → recall_learnings("auth token")   # solved before?
+
+Reading a large file:
+  → summarize_file("src/auth.py")    # get outline
+  → read_file_range("src/auth.py", 45, 90)  # read just what's needed
 
 After fixing a bug:
-  → store_learning("JWT tokens expire in 15min, refresh endpoint is /auth/refresh")
-  → save_checkpoint(goal="...", action="fixed auth bug", files_changed=["auth.py"])
+  → store_learning("JWT tokens expire in 15min, refresh is /auth/refresh")
+  → save_checkpoint(goal="fix auth", action="fixed token expiry", files_changed=["auth.py"])
 
 Session end:
   → complete_session(summary="Fixed auth + added retry logic")

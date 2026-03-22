@@ -11,6 +11,4 @@
     "command": "agora-code inject --quiet 2>/dev/null || true",
     "timeout": 10
   },
-  "workspaceFolderName": "agora-code",
-  "shortName": "agora-session-inject"
 }
